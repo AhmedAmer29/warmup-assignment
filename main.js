@@ -200,65 +200,6 @@ function addShiftRecord(textFile, shiftObj) {
 }
 
 // ============================================================
-// Function 6: setBonus(textFile, driverID, date, newValue)
-// textFile: (typeof string) path to shifts text file
-// driverID: (typeof string)
-// date: (typeof string) formatted as yyyy-mm-dd
-// newValue: (typeof boolean)
-// Returns: nothing (void)
-// ============================================================
-function setBonus(textFile, driverID, date, newValue) {
-    const lines = readShiftRecords(textFile);
-
-    const updated = lines.map(line => {
-        if (line.driverID === driverID && line.date === date) {
-            line.hasBonus = newValue;
-        }
-        return Object.values(line).join(",");
-    });
-
-    fs.writeFileSync(textFile, updated.join("\n") + "\n");
-}
-
-// ============================================================
-// Function 7: countBonusPerMonth(textFile, driverID, month)
-// textFile: (typeof string) path to shifts text file
-// driverID: (typeof string)
-// month: (typeof string) formatted as mm or m
-// Returns: number (-1 if driverID not found)
-// ============================================================
-function countBonusPerMonth(textFile, driverID, month) {
-    const formattedMonth = month.toString().padStart(2, "0"); 
-    const driverRecords = readShiftRecords(textFile).filter(r => r.driverID === driverID);
-    if (!driverRecords.length) return -1;
-
-    return driverRecords.filter(r => r.date.split("-")[1] === formattedMonth && r.hasBonus).length;
-}
-
-// ============================================================
-// Function 8: getTotalActiveHoursPerMonth(textFile, driverID, month)
-// textFile: (typeof string) path to shifts text file
-// driverID: (typeof string)
-// month: (typeof number)
-// Returns: string formatted as hhh:mm:ss
-// ============================================================
-function getTotalActiveHoursPerMonth(textFile, driverID, month) {
-    // TODO: Implement this function
-    let totalSeconds = 0;
-    const formattedMonth = month.toString().padStart(2, "0");
-    const driverRecords = readShiftRecords(textFile).filter(r => r.driverID === driverID);
-    if (!driverRecords.length) return "000:00:00";
-    
-    driverRecords.forEach(record => {
-        if (record.date.split("-")[1] === formattedMonth) {
-            totalSeconds += toSeconds(record.activeTime);
-        }
-    });
-
-    return toHMS(totalSeconds);
-}
-
-// ============================================================
 // Function 9: getRequiredHoursPerMonth(textFile, rateFile, bonusCount, driverID, month)
 // textFile: (typeof string) path to shifts text file
 // rateFile: (typeof string) path to driver rates text file
@@ -267,8 +208,43 @@ function getTotalActiveHoursPerMonth(textFile, driverID, month) {
 // month: (typeof number)
 // Returns: string formatted as hhh:mm:ss
 // ============================================================
-function getRequiredHoursPerMonth(textFile, rateFile, bonusCount, driverID, month) {
-    // TODO: Implement this function
+function getRequiredHoursPerMonth(shiftFile, rateFile, bonusCount, driverID, month) {
+    const eidStart = new Date("2025-04-10");
+    const eidEnd = new Date("2025-04-20");
+    const formattedMonth = month.toString().padStart(2, "0");
+
+    const shifts = readShiftRecords(shiftFile).filter(r => r.driverID === driverID);
+    if (!shifts.length) {
+        return "0:00:00";
+    }
+
+    const driverRate = readDriverRates(rateFile).find(r => r.driverID === driverID);
+    if (!driverRate) {
+        return "0:00:00";
+    }
+
+    let requiredSeconds = 0;
+
+    for (const record of shifts) {
+        if (record.date.split("-")[1] !== formattedMonth) continue;
+
+        const dateObj = new Date(record.date);
+        const dayOfWeek = dateObj.toLocaleString("en-US", { weekday: "long" });
+
+        if (dayOfWeek === driverRate.dayOff) continue;
+
+        let quota = 8 * 3600 + 24 * 60;
+
+        if (dateObj >= eidStart && dateObj <= eidEnd) {
+            quota = 6 * 3600;
+        }
+
+        requiredSeconds += quota;
+    }
+
+    requiredSeconds = Math.max(0, requiredSeconds - bonusCount * 2 * 3600);
+
+    return toHMS(requiredSeconds);
 }
 
 // ============================================================
@@ -280,7 +256,28 @@ function getRequiredHoursPerMonth(textFile, rateFile, bonusCount, driverID, mont
 // Returns: integer (net pay)
 // ============================================================
 function getNetPay(driverID, actualHours, requiredHours, rateFile) {
-    // TODO: Implement this function
+    const driverRate = readDriverRates(rateFile).find(r => r.driverID === driverID);
+    if (!driverRate) return 0;
+
+    const basePay = driverRate.basePay;
+    const tier = driverRate.tier;
+
+    const actualSec = actualHours.split(":").reduce((acc, time) => (acc * 60) + +time, 0);
+    const requiredSec = requiredHours.split(":").reduce((acc, time) => (acc * 60) + +time, 0);
+
+    if (actualSec >= requiredSec) return basePay;
+
+    let missingSeconds = requiredSec - actualSec;
+    const allowanceSeconds = getAllowedMissingHours(tier) * 3600;
+    let secondsAfterAllowance = missingSeconds - allowanceSeconds;
+
+    if (secondsAfterAllowance <= 0) return basePay;
+
+    const billableMissingHours = Math.floor(secondsAfterAllowance / 3600);
+    const deductionRatePerHour = Math.floor(basePay / 185);
+    const salaryDeduction = billableMissingHours * deductionRatePerHour;
+
+    return basePay - salaryDeduction;
 }
 
 module.exports = {
@@ -295,3 +292,4 @@ module.exports = {
     getRequiredHoursPerMonth,
     getNetPay
 };
+
